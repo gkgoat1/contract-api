@@ -1,0 +1,65 @@
+{
+  "name": "@gkgo/contract-api",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "license": "(CC0-1.0 OR Unlicense OR WTFPL)",
+  "description": "Contract interaction contexts (direct, multicall, RAILGUN) + deployment helpers (Safe, counterfactual CREATE2, private deploys) + browser host seams. Deployments are just API calls with counterfactually precomputed addresses.",
+  "exports": {
+    ".": {
+      "types": "./dist/core/index.d.ts",
+      "default": "./dist/core/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "default": "./dist/testing/index.js"
+    },
+    "./railgun": {
+      "types": "./dist/railgun/index.d.ts",
+      "default": "./dist/railgun/index.js"
+    },
+    "./src/*": "./src/*"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.check.json --noEmit",
+    "test": "node --test tests/"
+  },
+  "peerDependencies": {
+    "@railgun-community/waku-broadcaster-client-web": "^10.0.1",
+    "@railgun-community/wallet": "^11.2.0",
+    "@safe-global/safe-deployments": "^1.37.65",
+    "ethers": "^6.17.0",
+    "svelte": "^5.57.2",
+    "viem": "^2.37.4"
+  },
+  "peerDependenciesMeta": {
+    "svelte": {
+      "optional": true
+    },
+    "@safe-global/safe-deployments": {
+      "optional": true
+    },
+    "@railgun-community/wallet": {
+      "optional": true
+    },
+    "@railgun-community/waku-broadcaster-client-web": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "@railgun-community/engine": "*",
+    "@railgun-community/shared-models": "*",
+    "@railgun-community/waku-broadcaster-client-web": "^10.0.1",
+    "ethers": "^6.17.0",
+    "level-js": "*",
+    "localforage": "*",
+    "viem": "^2.37.4"
+  },
+  "devDependencies": {
+    "@railgun-community/wallet": "^11.2.0",
+    "@safe-global/safe-deployments": "^1.37.64",
+    "svelte": "^5.57.3",
+    "typescript": "^5.9.3"
+  }
+}
