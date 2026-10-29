@@ -1,0 +1,216 @@
+/**
+ * Smart contract wallet contexts: calls execute FROM a contract wallet,
+ * authorized by an arbitrary signer (signers.ts) whose signature is checked
+ * ahead-of-time against the wallet's ERC-1271 isValidSignature.
+ *
+ * Two modes:
+ * - `SmartWalletDirectContext` — one wallet execution per call.
+ * - `SmartWalletMulticall3Context` — the whole batch in one wallet execution
+ *   through Multicall3. Our wallets DELEGATE to Multicall3 (the dispatch is
+ *   marked delegateSafe): wallet.delegate(multicall3.ADDRESS, aggregate3 data)
+ *   so calls execute with msg.sender = the wallet while reusing the canonical
+ *   audited batcher. Wallets with their own batch surface (ERC-7821) use
+ *   `walletCall` instead.
+ *
+ * Submission is host-pluggable (4337 userOp, relayer, an authorized executor
+ * EOA, …): the context shapes the wallet call, gets the digest signed, and
+ * preflights the signature against the wallet before submitting.
+ */
+import {
+  encodeAbiParameters,
+  encodeFunctionData,
+  type Address,
+  type Hex,
+  type PublicClient,
+} from "viem";
+import type {
+  ContractCall,
+  ExecuteOpts,
+  ExecutionEvent,
+  ExecutionQuote,
+  ExecutionResult,
+  InteractionContext,
+  SupportReport,
+} from "./types.js";
+import { signAndVerify, type ArbitrarySigner } from "./signers.js";
+import { multicall3 } from "./dispatch/multicall3.js";
+
+/** How the host gets an authorized wallet execution on-chain. */
+export interface WalletExecutor {
+  /** The digest the signer must sign to authorize this wallet execution. */
+  digestFor(walletCall: { to: Address; data: Hex }): Promise<Hex>;
+  /** Estimate gas for the authorized execution (signature may be a dummy). */
+  estimate(walletCall: { to: Address; data: Hex }, signature: Hex): Promise<bigint>;
+  /** Submit the authorized execution; resolves to the on-chain tx hash. */
+  submit(walletCall: { to: Address; data: Hex }, signature: Hex): Promise<Hex>;
+}
+
+export interface SmartWalletDeps {
+  /** The contract wallet (must implement ERC-1271). */
+  wallet: Address;
+  /** Arbitrary signer whose signatures the wallet accepts. */
+  signer: ArbitrarySigner;
+  executor: WalletExecutor;
+  publicClient: PublicClient;
+  chainId: number;
+}
+
+/** ERC-7821 default batch mode (callType=batch 0x01, execType=default 0x00). */
+export const ERC7821_BATCH_MODE: Hex =
+  "0x0100000000000000000000000000000000000000000000000000000000000000";
+
+const ERC7821_EXECUTE_ABI = [
+  {
+    type: "function",
+    name: "execute",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "mode", type: "bytes32" },
+      { name: "executionData", type: "bytes" },
+    ],
+    outputs: [],
+  },
+] as const;
+
+const EXECUTION_TUPLE = [
+  {
+    type: "tuple[]",
+    name: "executions",
+    components: [
+      { name: "target", type: "address" },
+      { name: "value", type: "uint256" },
+      { name: "callData", type: "bytes" },
+    ],
+  },
+] as const;
+
+const WALLET_DELEGATE_ABI = [
+  {
+    type: "function",
+    name: "delegate",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "target", type: "address" },
+      { name: "data", type: "bytes" },
+    ],
+    outputs: [{ name: "result", type: "bytes" }],
+  },
+] as const;
+
+/** ERC-7821 batch executionData = abi.encode(Execution[]). */
+export function encodeBatch7821(calls: ContractCall[]): Hex {
+  return encodeAbiParameters(EXECUTION_TUPLE, [
+    calls.map((c) => ({ target: c.to, value: c.value ?? 0n, callData: c.data })),
+  ]);
+}
+
+/** The wallet call executing the batch via the wallet's own ERC-7821 loop. */
+export function walletExecuteBatch(wallet: Address, calls: ContractCall[]): { to: Address; data: Hex } {
+  return {
+    to: wallet,
+    data: encodeFunctionData({
+      abi: ERC7821_EXECUTE_ABI,
+      functionName: "execute",
+      args: [ERC7821_BATCH_MODE, encodeBatch7821(calls)],
+    }),
+  };
+}
+
+/** The wallet call executing the batch by DELEGATING to Multicall3 (our
+ *  wallets' pattern; msg.sender inside the batch is the wallet). */
+export function walletDelegateMulticall3(wallet: Address, calls: ContractCall[]): { to: Address; data: Hex } {
+  const agg = multicall3.aggregate3(calls.map((c) => ({ target: c.to, allowFailure: false, callData: c.data })));
+  return {
+    to: wallet,
+    data: encodeFunctionData({ abi: WALLET_DELEGATE_ABI, functionName: "delegate", args: [agg.to, agg.data] }),
+  };
+}
+
+abstract class SmartWalletBase implements InteractionContext {
+  abstract readonly kind: string;
+  protected readonly deps: SmartWalletDeps;
+  readonly chainId: number;
+
+  constructor(deps: SmartWalletDeps) {
+    this.deps = deps;
+    this.chainId = deps.chainId;
+  }
+
+  async supports(calls: ContractCall[]): Promise<SupportReport> {
+    const blockers: { call?: number; reason: string }[] = [];
+    calls.forEach((call, i) => {
+      if (call.value !== undefined && call.value !== 0n) {
+        blockers.push({ call: i, reason: "batched wallet execution cannot forward per-call native value." });
+      }
+    });
+    return { supported: blockers.length === 0, blockers };
+  }
+
+  protected abstract batches(calls: ContractCall[]): { to: Address; data: Hex }[];
+
+  async quote(calls: ContractCall[]): Promise<ExecutionQuote> {
+    let gas = 0n;
+    for (const wc of this.batches(calls)) {
+      const digest = await this.deps.executor.digestFor(wc);
+      const dummySig = await this.deps.signer.sign(digest); // real sig for a faithful estimate
+      gas += await this.deps.executor.estimate(wc, dummySig);
+    }
+    const gasPrice = await this.deps.publicClient.getGasPrice();
+    return {
+      gas,
+      nativeCost: gas * gasPrice,
+      contextFees: [],
+      notes: [
+        `Calls execute from the contract wallet ${this.deps.wallet} (msg.sender = the wallet).`,
+        "Authorization is an arbitrary signer checked ahead-of-time against the wallet's ERC-1271.",
+      ],
+    };
+  }
+
+  async *execute(calls: ContractCall[], opts?: ExecuteOpts): AsyncGenerator<ExecutionEvent, ExecutionResult> {
+    const txHashes: Hex[] = [];
+    const receipts: ExecutionResult["receipts"] = [];
+    for (const wc of this.batches(calls)) {
+      const digest = await this.deps.executor.digestFor(wc);
+      // Arbitrary signer, checked ahead-of-time against the wallet contract.
+      const signature = await signAndVerify(this.deps.signer, digest, this.deps.publicClient);
+      const txHash = await this.deps.executor.submit(wc, signature);
+      yield { phase: "submitted", txHash };
+      const receipt = await this.deps.publicClient.waitForTransactionReceipt({ hash: txHash });
+      if (receipt.status === "reverted") throw new Error(`Transaction ${txHash} was reverted.`);
+      txHashes.push(txHash);
+      receipts.push(receipt);
+      yield { phase: "confirmed", txHash };
+    }
+    return { txHashes, receipts };
+  }
+}
+
+/** Direct mode: one authorized wallet execution per call. */
+export class SmartWalletDirectContext extends SmartWalletBase {
+  readonly kind = "smart-wallet-direct";
+  protected batches(calls: ContractCall[]): { to: Address; data: Hex }[] {
+    return calls.map((c) => walletExecuteBatch(this.deps.wallet, [c]));
+  }
+}
+
+/** Multicall3 mode: the whole batch in ONE authorized wallet execution.
+ *  `via: "delegate"` (default — our wallets) delegates to Multicall3;
+ *  `"erc7821"` uses the wallet's own batch loop. */
+export class SmartWalletMulticall3Context extends SmartWalletBase {
+  readonly kind = "smart-wallet-multicall3";
+  private readonly via: "delegate" | "erc7821";
+
+  constructor(deps: SmartWalletDeps, via: "delegate" | "erc7821" = "delegate") {
+    super(deps);
+    this.via = via;
+  }
+
+  protected batches(calls: ContractCall[]): { to: Address; data: Hex }[] {
+    return [
+      this.via === "delegate"
+        ? walletDelegateMulticall3(this.deps.wallet, calls)
+        : walletExecuteBatch(this.deps.wallet, calls),
+    ];
+  }
+}

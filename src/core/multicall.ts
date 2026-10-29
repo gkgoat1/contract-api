@@ -18,37 +18,11 @@ import type {
   SupportReport,
 } from "./types.js";
 
-/** Canonical Multicall3 deployment (same address on every EVM chain). */
-export const MULTICALL3_ADDRESS: Address = "0xcA11bde05977b3631167028862bE2a173976CA11";
-
-const multicall3Abi = [
-  {
-    type: "function",
-    name: "aggregate3",
-    stateMutability: "payable",
-    inputs: [
-      {
-        name: "calls",
-        type: "tuple[]",
-        components: [
-          { name: "target", type: "address" },
-          { name: "allowFailure", type: "bool" },
-          { name: "callData", type: "bytes" },
-        ],
-      },
-    ],
-    outputs: [
-      {
-        name: "returnData",
-        type: "tuple[]",
-        components: [
-          { name: "success", type: "bool" },
-          { name: "returnData", type: "bytes" },
-        ],
-      },
-    ],
-  },
-] as const;
+/** Canonical Multicall3 deployment (same address on every EVM chain). The typed
+ *  dispatch is GENERATED (dispatch/multicall3.ts) — smart wallets delegate to it. */
+export { multicall3 } from "./dispatch/multicall3.js";
+import { multicall3, ADDRESS as MULTICALL3_DISPATCH_ADDRESS } from "./dispatch/multicall3.js";
+export const MULTICALL3_ADDRESS: Address = MULTICALL3_DISPATCH_ADDRESS;
 
 export interface MulticallContextDeps {
   walletClient: WalletClient;
@@ -94,13 +68,9 @@ export class MulticallContext implements InteractionContext {
   }
 
   private encodeBatch(calls: ContractCall[]): Hex {
-    return encodeFunctionData({
-      abi: multicall3Abi,
-      functionName: "aggregate3",
-      args: [
-        calls.map((c) => ({ target: c.to, allowFailure: false, callData: c.data })),
-      ],
-    });
+    return multicall3.aggregate3(
+      calls.map((c) => ({ target: c.to, allowFailure: false, callData: c.data })),
+    ).data;
   }
 
   async quote(calls: ContractCall[]): Promise<ExecutionQuote> {

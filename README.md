@@ -14,6 +14,16 @@ This repo merges what used to be `sc/packages/contract-api` (contexts) and
   spends/receives declarations), direct EOA execution, Multicall3, pipelines,
   the context registry, and `deploy.ts` (counterfactual CREATE2:
   `precomputeCreate2Address`, `deployCall`, `withCounterfactualDeploy`).
+  - `signers.ts` — arbitrary signers for contract wallets (any key type),
+    checked ahead-of-time against the contract's ERC-1271 `isValidSignature`.
+  - `smart-wallet.ts` — `SmartWalletDirectContext` (one authorized wallet
+    execution per call) and `SmartWalletMulticall3Context` (the batch in one
+    execution; our wallets DELEGATE to Multicall3 so msg.sender stays the
+    wallet). Submission is host-pluggable (4337/relayer/executor EOA).
+  - `dispatch/multicall3.ts` — GENERATED typed dispatch for Multicall3;
+    regenerate with `node scripts/gen-dispatch.mjs`. New public services
+    designed for contract-level batched interaction go into
+    `dispatch.spec.json` and get the same treatment (incl. `delegateSafe`).
 - `src/railgun/` — the RAILGUN context (Relay Adapt unshield→calls→reshield),
   engine SDK binding, broadcaster selection, private-deploy funding source.
 - `src/testing/` — test doubles.
@@ -39,7 +49,7 @@ This repo merges what used to be `sc/packages/contract-api` (contexts) and
 
 - `npm run build` (tsc, NodeNext, core/railgun/testing → dist)
 - `npm run typecheck` (whole src incl. the .ts-extension source files)
-- `npm test` (node --test; 34 tests incl. the CREATE2 golden vector)
+- `npm test` (node --test; 42 tests incl. the CREATE2 golden vector, the ERC-1271 preflight, and dispatch-drift checks)
 
 Deps install with `npm install --legacy-peer-deps` (railgun shared-models pins
 ethers@6.14.3 exactly; we support newer ethers in practice).
