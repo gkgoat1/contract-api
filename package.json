@@ -59,6 +59,7 @@
   "devDependencies": {
     "@railgun-community/wallet": "^11.2.0",
     "@safe-global/safe-deployments": "^1.37.64",
+    "m3-svelte": "^7.2.1",
     "svelte": "^5.57.3",
     "typescript": "^5.9.3"
   }
