@@ -30,8 +30,7 @@
     "@railgun-community/wallet": "^11.2.0",
     "@safe-global/safe-deployments": "^1.37.65",
     "ethers": "^6.17.0",
-    "svelte": "^5.57.2",
-    "viem": "^2.37.4"
+    "svelte": "^5.57.2"
   },
   "peerDependenciesMeta": {
     "svelte": {
@@ -53,8 +52,7 @@
     "@railgun-community/waku-broadcaster-client-web": "^10.0.1",
     "ethers": "^6.17.0",
     "level-js": "*",
-    "localforage": "*",
-    "viem": "^2.37.4"
+    "localforage": "*"
   },
   "devDependencies": {
     "@railgun-community/wallet": "^11.2.0",

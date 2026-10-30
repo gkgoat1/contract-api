@@ -24,6 +24,11 @@ import type { RailgunReadProvider } from "./railgun/types.js";
 /** Raw EIP-1193 request shape (what window.ethereum exposes). */
 export interface EIP1193Provider {
   request(args: { method: string; params?: unknown[] | Record<string, unknown> }): Promise<unknown>;
+  /** Wallet event subscription (injected providers implement these). */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  on?(event: string, listener: (...args: any[]) => void): void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  removeListener?(event: string, listener: (...args: any[]) => void): void;
 }
 import { NETWORK_CONFIG } from "@railgun-community/shared-models";
 import {

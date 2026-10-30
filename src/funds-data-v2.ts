@@ -5,21 +5,20 @@
  * file, `autolift/crates/statement-v2` (Rust), and `autolift/src/FundsDataV2.sol`
  * (Solidity) is enforced by golden vectors at `autolift/test/.vectors/funds-data-v2.json`.
  */
-import {
-  bytesToHex,
-  concat,
-  hexToBytes,
-  keccak256,
-  numberToHex,
-  stringToBytes,
-  stringToHex,
-  type Address,
-  type Hex,
-} from "viem";
+import { concat, getBytes, hexlify, keccak256, toBeHex, toUtf8Bytes } from "ethers";
+import type { Address, Hex } from "./core/types.js";
+
+const bytesToHex = (b: Uint8Array): Hex => hexlify(b) as Hex;
+const hexToBytes = (h: string): Uint8Array => getBytes(h);
+const numberToHex = (n: number | bigint, opts?: { size?: number }): Hex => (opts?.size ? toBeHex(n, opts.size) : toBeHex(n)) as Hex;
+const stringToBytes = toUtf8Bytes;
+const stringToHex = (v: string): Hex => hexlify(toUtf8Bytes(v)) as Hex;
+/** concat with a Hex return (ethers' concat returns plain string). */
+const cc = (parts: (string | Uint8Array)[]): Hex => concat(parts as never) as Hex;
 
 export const FUNDS_DATA_V2_MAGIC = "ALT2";
 
-/** Re-exported so vector tooling needs no direct viem resolution. */
+/** Re-exported so vector tooling needs no direct ethers resolution. */
 export { keccak256 };
 
 // ---------------------------------------------------------------------------
@@ -127,13 +126,13 @@ class Reader {
 export function encodeTextCheck(check: TextCheckV2): Hex {
   switch (check.tag) {
     case 0:
-      return concat([numberToHex(0, { size: 1 }), u32(4 + hexToBytes(check.expected).length), u32(check.offset), check.expected]);
+      return cc([numberToHex(0, { size: 1 }), u32(4 + hexToBytes(check.expected).length), u32(check.offset), check.expected]);
     case 1:
-      return concat([numberToHex(1, { size: 1 }), u32(hexToBytes(check.substring).length), check.substring]);
+      return cc([numberToHex(1, { size: 1 }), u32(hexToBytes(check.substring).length), check.substring]);
     case 2:
-      return concat([numberToHex(2, { size: 1 }), u32(32), check.digest]);
+      return cc([numberToHex(2, { size: 1 }), u32(32), check.digest]);
     case 3:
-      return concat([numberToHex(3, { size: 1 }), u32(4), u32(check.maxLen)]);
+      return cc([numberToHex(3, { size: 1 }), u32(4), u32(check.maxLen)]);
   }
 }
 
@@ -143,26 +142,26 @@ export function encodeClaim(claim: ClaimV2): Hex {
     case 0x01: {
       const origin = stringToHex(claim.origin);
       const checks = concat(claim.checks.map(encodeTextCheck));
-      body = concat([u16(hexToBytes(origin).length), origin, claim.contentDigest, u16(claim.checks.length), checks]);
+      body = cc([u16(hexToBytes(origin).length), origin, claim.contentDigest, u16(claim.checks.length), checks]);
       break;
     }
     case 0x02:
       body = claim.stmtHash;
       break;
     case 0x03:
-      body = concat([claim.subject, claim.payloadDigest, claim.signature]);
+      body = cc([claim.subject, claim.payloadDigest, claim.signature]);
       break;
     case 0x04:
-      body = concat([u16(claim.templateId), claim.params]);
+      body = cc([u16(claim.templateId), claim.params]);
       break;
   }
-  return concat([numberToHex(claim.kind, { size: 1 }), u32(hexToBytes(body).length), body]);
+  return cc([numberToHex(claim.kind, { size: 1 }), u32(hexToBytes(body).length), body]);
 }
 
 export function encodeFundsDataV2(input: FundsDataV2): Hex {
   const rpId = stringToHex(input.rpId);
   const { policy } = input;
-  return concat([
+  return cc([
     stringToHex(FUNDS_DATA_V2_MAGIC),
     u16(hexToBytes(rpId).length),
     rpId,
@@ -267,10 +266,10 @@ export function renderStatementTemplate(templateId: number, blockHash: Hex): str
 
 /** Guest-visible request id for v2 envelopes: keccak256(cell ‖ nonce be64 ‖ fundsData). */
 export function fundingRequestIdV2(cell: Address, nonce: bigint, fundsData: Hex): Hex {
-  return keccak256(concat([cell, u64(nonce), fundsData]));
+  return keccak256(cc([cell, u64(nonce), fundsData])) as Hex;
 }
 
 /** Passkey ceremony challenge: keccak256(id ‖ rpId as utf8). */
 export function passkeyChallenge(id: Hex, rpId: string): Hex {
-  return keccak256(concat([id, bytesToHex(stringToBytes(rpId))]));
+  return keccak256(cc([id, bytesToHex(stringToBytes(rpId))])) as Hex;
 }

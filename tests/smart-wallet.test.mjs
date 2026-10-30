@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { encodeFunctionData, keccak256, toHex } from "viem";
+import { keccak256, toUtf8Bytes } from "ethers";
 import { verifyContractSignature, signAndVerify } from "../dist/core/signers.js";
 import { multicall3 } from "../dist/core/dispatch/multicall3.js";
 import {
@@ -14,7 +14,7 @@ import { MULTICALL3_ADDRESS } from "../dist/core/multicall.js";
 
 const WALLET = "0x1111111111111111111111111111111111111111";
 const TARGET = "0x2222222222222222222222222222222222222222";
-const DIGEST = keccak256(toHex("hello"));
+const DIGEST = keccak256(toUtf8Bytes("hello"));
 const SIG = "0xdeadbeef";
 
 /** A ReadProvider stub whose `call` answers ERC-1271 per a flag. */
@@ -73,29 +73,13 @@ test("signAndVerify throws before reliance when the contract rejects", async () 
   assert.equal(await signAndVerify(fakeSigner(), DIGEST, fakePublicClient(true)), SIG);
 });
 
-test("multicall3 dispatch encodes aggregate3 identically to a hand-built viem call", async () => {
-  const { encodeFunctionData: viemEncode } = await import("viem");
-  const abi = [
-    {
-      type: "function",
-      name: "aggregate3",
-      stateMutability: "payable",
-      inputs: [
-        {
-          name: "calls",
-          type: "tuple[]",
-          components: [
-            { name: "target", type: "address" },
-            { name: "allowFailure", type: "bool" },
-            { name: "callData", type: "bytes" },
-          ],
-        },
-      ],
-      outputs: [],
-    },
-  ];
+test("multicall3 dispatch encodes aggregate3 identically to an independent hand-written encoding", async () => {
+  const { Interface } = await import("ethers");
+  const independent = new Interface([
+    "function aggregate3((address target, bool allowFailure, bytes callData)[] calls) payable",
+  ]);
   const calls = [{ target: TARGET, allowFailure: false, callData: "0xaaaaaaaa" }];
-  assert.equal(multicall3.aggregate3(calls).data, viemEncode({ abi, functionName: "aggregate3", args: [calls] }));
+  assert.equal(multicall3.aggregate3(calls).data, independent.encodeFunctionData("aggregate3", [calls]));
   assert.equal(multicall3.aggregate3(calls).to, MULTICALL3_ADDRESS);
 });
 
