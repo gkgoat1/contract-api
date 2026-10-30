@@ -6,7 +6,8 @@
  * deploys; leftover gas is swept back into the shielded balance.
  */
 import { JsonRpcProvider, NonceManager, Wallet, parseEther, type Signer } from "ethers";
-import { createPublicClient, http, type Address, type EIP1193Provider } from "viem";
+import type { Address } from "./core/types.js";
+import { viemPublicClientFor, type EIP1193Provider } from "./host-railgun.ts";
 import {
   deployPrivately,
   isPrivacySupported,
@@ -62,16 +63,13 @@ function createEphemeralDeployer(rpcUrl: string): EphemeralWithSigner {
   };
 }
 
-/** The wallet side of the host seam — viem's full EIP1193Provider type demands
- *  removeListener; browsers' injected providers only guarantee request (+on). */
-interface MinimalEip1193Provider {
-  request(args: { method: string; params?: unknown[] | object }): Promise<unknown>;
-}
+// The wallet side of the host seam (browsers' injected providers only guarantee
+// `request` (+`on`)) — the canonical shape lives in host-railgun.ts.
 
 export interface RailgunDeployArgs {
   chainId: number;
   rpcUrl: string;
-  provider: MinimalEip1193Provider;
+  provider: EIP1193Provider;
   account: string;
   /** Overrides the chain's wrapped base token as the broadcaster fee token. */
   feeTokenAddress?: Address | null;
@@ -96,13 +94,13 @@ export async function deployViaRailgun(args: RailgunDeployArgs): Promise<void> {
   const host: RailgunHost = {
     chainId: args.chainId,
     rpcUrl: args.rpcUrl,
-    provider: args.provider as EIP1193Provider,
+    provider: args.provider,
     account: args.account.toLowerCase() as Address,
     feeTokenAddress: args.feeTokenAddress === undefined ? wethForChain(args.chainId) : (args.feeTokenAddress ?? undefined),
     onStatus: args.onStatus,
   };
   const funding = await resolveRailgunFunding(host);
-  const publicClient = createPublicClient({ transport: http(args.rpcUrl) });
+  const publicClient = viemPublicClientFor(args); // E-3 island (sweep reads balances)
   const ephemeral = createEphemeralDeployer(args.rpcUrl);
   args.onStatus(`Funding ephemeral deployer ${ephemeral.address} from the shielded balance…`);
   await deployPrivately(

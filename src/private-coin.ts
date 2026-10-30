@@ -21,7 +21,7 @@
  * so positions obtained this way live in the user's shielded balance, not on
  * their public address.
  */
-import type { Address, Hex } from "viem";
+import type { Address, Hex } from "./core/types.js";
 import type { ContractCall, ExecutionQuote, ExecutionResult } from "@gkgo/contract-api";
 import { isPrivacySupported, resolveRailgunContext, type RailgunHost } from "./host-railgun.ts";
 

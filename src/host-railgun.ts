@@ -17,10 +17,16 @@
  * Heavy, Node-oriented modules (@railgun-community/wallet, engine, level-js,
  * localforage) load lazily and only when privacy mode actually runs.
  */
-import { createPublicClient, createWalletClient, custom, http, keccak256 } from "viem";
-import { mainnet, bsc, polygon, arbitrum, base, type Chain } from "viem/chains";
-import type { EIP1193Provider } from "viem";
-import type { Address, Hex } from "viem";
+import { BrowserProvider, JsonRpcProvider, keccak256 } from "ethers";
+// E-3 ISLAND (deleted when the railgun internals take ReadProvider): the sdk and
+// context deps still speak viem PublicClient until the worker's E-3 lands.
+import { createPublicClient, http, type PublicClient as ViemPublicClient } from "viem";
+import type { Address, Hex, ReadProvider, WriteSigner } from "./core/types.js";
+
+/** Raw EIP-1193 request shape (what window.ethereum exposes). */
+export interface EIP1193Provider {
+  request(args: { method: string; params?: unknown[] | Record<string, unknown> }): Promise<unknown>;
+}
 import { NETWORK_CONFIG } from "@railgun-community/shared-models";
 import {
   createRailgunContext,
@@ -39,25 +45,24 @@ export function isPrivacySupported(chainId: number | undefined): boolean {
   return chainId !== undefined && networkNameForChain(chainId) !== undefined;
 }
 
-/** viem chain object for a supported chain (needed for structured tx signing). */
-export function railgunChainForId(chainId: number): Chain {
-  switch (chainId) {
-    case 1:
-      return mainnet;
-    case 56:
-      return bsc;
-    case 137:
-      return polygon;
-    case 42161:
-      return arbitrum;
-    case 8453:
-      return base;
-    case 31337:
-      return { id: 31337, name: "Anvil", nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }, rpcUrls: { default: { http: ["http://localhost:8545"] } } };
-    default:
-      throw new Error(`RAILGUN is not available on chain ${chainId}.`);
-  }
+/** E-3 island: the viem read client the railgun internals still expect. */
+export function viemPublicClientFor(host: { rpcUrl: string }): ViemPublicClient {
+  return createPublicClient({ transport: http(host.rpcUrl) });
 }
+
+/** ethers read provider for the host's own calls. */
+export function ethersReadProvider(host: { rpcUrl: string; chainId: number }): JsonRpcProvider {
+  return new JsonRpcProvider(host.rpcUrl, host.chainId);
+}
+
+/** ethers signer over the host's EIP-1193 provider (signMessage + sendTransaction). */
+export async function ethersHostSigner(
+  host: RailgunHost,
+): Promise<WriteSigner & { signMessage(message: string): Promise<string> }> {
+  const bp = new BrowserProvider(host.provider as never, host.chainId);
+  return (await bp.getSigner(host.account)) as never;
+}
+
 
 /** Anything that can send a transaction from the ephemeral deployer identity. */
 export interface EphemeralDeployer {
@@ -112,7 +117,8 @@ export async function calculateBroadcasterFee(opts: {
   feeTokenAddress: Address;
   feePerUnitGas: bigint;
   gasEstimate: bigint;
-  publicClient: ReturnType<typeof createPublicClient>;
+  /** E-3 island: viem client until the railgun internals take ReadProvider. */
+  publicClient: ViemPublicClient;
 }): Promise<bigint> {
   const { calculateBroadcasterFeeERC20Amount } = await import("@railgun-community/wallet");
   const fees = await opts.publicClient.estimateFeesPerGas();
@@ -143,8 +149,8 @@ export async function bootstrapRailgunFunding(host: RailgunHost): Promise<Fundin
     return session.contextWith();
   }
   const status = host.onStatus ?? ((): void => undefined);
-  const publicClient = createPublicClient({ transport: http(host.rpcUrl) });
-  const { selectBroadcasterForContext } = await import("@gkgo/contract-api/railgun");
+  const publicClient = viemPublicClientFor(host);
+  const { selectBroadcasterForContext } = await import("./railgun/index.js");
   try {
     // A shape-only estimate: the unshield's gas is roughly constant for a given
     // amount; the SDK prices the broadcaster fee from the selected broadcaster's
@@ -198,12 +204,8 @@ async function bootstrapRailgunSessionInner(host: RailgunHost): Promise<RailgunS
   const { default: Level } = await import("level-js");
   const { default: localforage } = await import("localforage");
 
-  const walletClient = createWalletClient({
-    transport: custom(host.provider),
-    account: host.account,
-    chain: railgunChainForId(host.chainId),
-  });
-  const publicClient = createPublicClient({ transport: http(host.rpcUrl) });
+  const signer = await ethersHostSigner(host);
+  const publicClient = viemPublicClientFor(host);
 
   if (!engineStarted) {
     status("Starting the RAILGUN engine (first run downloads proving artifacts)…");
@@ -228,10 +230,7 @@ async function bootstrapRailgunSessionInner(host: RailgunHost): Promise<RailgunS
   }
 
   status("Deriving RAILGUN credentials (one signature)…");
-  const signature = await walletClient.signMessage({
-    account: host.account,
-    message: RAILGUN_DERIVATION_MESSAGE,
-  });
+  const signature = await signer.signMessage(RAILGUN_DERIVATION_MESSAGE);
   const encryptionKey = keccak256(signature);
   const mnemonic = Mnemonic.fromEntropy(encryptionKey);
 
@@ -244,10 +243,7 @@ async function bootstrapRailgunSessionInner(host: RailgunHost): Promise<RailgunS
   );
 
   const shieldPrivateKey = keccak256(
-    await walletClient.signMessage({
-      account: host.account,
-      message: wallet.getShieldPrivateKeySignatureMessage(),
-    }),
+    await signer.signMessage(wallet.getShieldPrivateKeySignatureMessage()),
   );
 
   status("Syncing shielded balances (QuickSync)…");
@@ -263,14 +259,8 @@ async function bootstrapRailgunSessionInner(host: RailgunHost): Promise<RailgunS
     railgunAddress: info.railgunAddress,
   });
 
-  const selfSubmit = (tx: { to: Address; data: Hex; value?: bigint }): Promise<Hex> =>
-    walletClient.sendTransaction({
-      account: host.account,
-      chain: railgunChainForId(host.chainId),
-      to: tx.to,
-      data: tx.data,
-      value: tx.value,
-    });
+  const selfSubmit = async (tx: { to: Address; data: Hex; value?: bigint }): Promise<Hex> =>
+    (await signer.sendTransaction({ to: tx.to, data: tx.data, value: tx.value })).hash as Hex;
 
   return {
     sdk,
@@ -307,7 +297,8 @@ export interface PrivateDeploymentOpts {
 
 export interface PrivateDeploymentCtx {
   funding: FundingSource;
-  publicClient: ReturnType<typeof createPublicClient>;
+  /** E-3 island: viem client until the railgun internals take ReadProvider. */
+  publicClient: ViemPublicClient;
 }
 
 /**
