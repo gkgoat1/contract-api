@@ -17,21 +17,24 @@ const TARGET = "0x2222222222222222222222222222222222222222";
 const DIGEST = keccak256(toHex("hello"));
 const SIG = "0xdeadbeef";
 
-/** A publicClient stub whose readContract answers ERC-1271 per a flag. */
+/** A ReadProvider stub whose `call` answers ERC-1271 per a flag. */
 function fakePublicClient(valid, receipts = true) {
   const calls = [];
   return {
     calls,
-    async readContract(args) {
-      calls.push(args);
+    async call(tx) {
+      calls.push(tx);
       if (!valid) throw new Error("revert");
-      return "0x1626ba7e";
+      return "0x1626ba7e" + "0".repeat(56); // magic bytes4 in a 32-byte word
     },
-    async getGasPrice() {
-      return 1_000_000_000n;
+    async estimateGas() {
+      return 21_000n;
     },
-    async waitForTransactionReceipt({ hash }) {
-      return { status: "success", transactionHash: hash };
+    async getFeeData() {
+      return { gasPrice: 1_000_000_000n };
+    },
+    async waitForTransaction(hash) {
+      return { status: 1, transactionHash: hash, blockNumber: 1 };
     },
   };
 }
@@ -111,7 +114,7 @@ test("smart-wallet direct: one authorized wallet execution per call, 1271-prefli
   while (!r.done) r = await gen.next();
   assert.equal(submitted.length, 2, "one submission per call");
   assert.equal(pc.calls.length, 2, "each execution preflighted via isValidSignature");
-  assert.equal(pc.calls[0].address, WALLET);
+  assert.equal(pc.calls[0].to, WALLET);
   assert.equal(submitted[0].signature, SIG);
 });
 

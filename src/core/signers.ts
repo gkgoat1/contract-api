@@ -4,7 +4,8 @@
  * signature FOR a contract wallet; validity is checked ahead-of-time against
  * the contract's ERC-1271 `isValidSignature` before anything executes.
  */
-import type { Address, Hex, PublicClient } from "viem";
+import { Interface } from "ethers";
+import type { Address, Hex, ReadProvider } from "./types.js";
 
 /** A signer whose signatures authorize a contract wallet (or any contract). */
 export interface ArbitrarySigner {
@@ -14,18 +15,9 @@ export interface ArbitrarySigner {
   sign(digest: Hex): Promise<Hex>;
 }
 
-const IERC1271_ABI = [
-  {
-    type: "function",
-    name: "isValidSignature",
-    stateMutability: "view",
-    inputs: [
-      { name: "hash", type: "bytes32" },
-      { name: "signature", type: "bytes" },
-    ],
-    outputs: [{ name: "magicValue", type: "bytes4" }],
-  },
-] as const;
+const IERC1271 = new Interface([
+  "function isValidSignature(bytes32 hash, bytes signature) view returns (bytes4 magicValue)",
+]);
 
 const ERC1271_MAGIC = "0x1626ba7e";
 
@@ -34,19 +26,15 @@ const ERC1271_MAGIC = "0x1626ba7e";
  * isValidSignature. Returns false (never throws) on revert / wrong magic.
  */
 export async function verifyContractSignature(
-  publicClient: PublicClient,
+  provider: ReadProvider,
   contract: Address,
   hash: Hex,
   signature: Hex,
 ): Promise<boolean> {
   try {
-    const result = await publicClient.readContract({
-      address: contract,
-      abi: IERC1271_ABI,
-      functionName: "isValidSignature",
-      args: [hash, signature],
-    });
-    return (result as string).toLowerCase() === ERC1271_MAGIC;
+    const data = IERC1271.encodeFunctionData("isValidSignature", [hash, signature]) as Hex;
+    const result = await provider.call({ to: contract, data });
+    return result.toLowerCase().slice(0, 10) === ERC1271_MAGIC;
   } catch {
     return false;
   }
@@ -59,7 +47,7 @@ export async function verifyContractSignature(
 export async function signAndVerify(
   signer: ArbitrarySigner,
   digest: Hex,
-  publicClient: PublicClient,
+  publicClient: ReadProvider,
 ): Promise<Hex> {
   const signature = await signer.sign(digest);
   const ok = await verifyContractSignature(publicClient, signer.address, digest, signature);

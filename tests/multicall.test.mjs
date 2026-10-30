@@ -8,7 +8,7 @@ import {
   resetContexts,
   resolveContext,
 } from "@gkgo/contract-api";
-import { decodeFunctionData } from "viem";
+import { Interface } from "ethers";
 
 const ACCOUNT = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
 const CHAIN = { id: 31337, name: "Anvil" };
@@ -19,24 +19,25 @@ function stubClients() {
   const sent = [];
   return {
     sent,
-    walletClient: {
+    signer: {
+      getAddress: async () => ACCOUNT,
       sendTransaction: async (args) => {
         sent.push(args);
-        return "0xbatchhash";
+        return { hash: "0xbatchhash" };
       },
     },
-    publicClient: {
+    provider: {
       estimateGas: async () => 120_000n,
-      getGasPrice: async () => 1_000_000_000n,
-      waitForTransactionReceipt: async ({ hash }) => ({ transactionHash: hash, status: "success" }),
+      getFeeData: async () => ({ gasPrice: 1_000_000_000n }),
+      waitForTransaction: async (hash) => ({ transactionHash: hash, status: 1, blockNumber: 1 }),
     },
   };
 }
 
 describe("MulticallContext", () => {
   it("batches all calls into one aggregate3 transaction to Multicall3", async () => {
-    const { walletClient, publicClient, sent } = stubClients();
-    const context = createMulticallContext({ walletClient, publicClient, account: ACCOUNT, chain: CHAIN });
+    const { signer, provider, sent } = stubClients();
+    const context = createMulticallContext({ signer, provider, chainId: CHAIN.id });
 
     const events = [];
     const iterator = context.execute([CALL_A, CALL_B]);
@@ -49,23 +50,9 @@ describe("MulticallContext", () => {
     assert.deepEqual(events.map((e) => e.phase), ["prepared", "submitted", "confirmed"]);
     assert.equal(sent.length, 1, "one transaction for the whole batch");
     assert.equal(sent[0].to, MULTICALL3_ADDRESS);
-    const decoded = decodeFunctionData({
-      abi: [{
-        type: "function",
-        name: "aggregate3",
-        inputs: [{
-          name: "calls",
-          type: "tuple[]",
-          components: [
-            { name: "target", type: "address" },
-            { name: "allowFailure", type: "bool" },
-            { name: "callData", type: "bytes" },
-          ],
-        }],
-        outputs: [],
-      }],
-      data: sent[0].data,
-    });
+    const decoded = new Interface([
+      "function aggregate3((address target, bool allowFailure, bytes callData)[] calls)",
+    ]).parseTransaction({ data: sent[0].data });
     assert.deepEqual(
       decoded.args[0].map((c) => [c.target, c.allowFailure, c.callData]),
       [[CALL_A.to, false, CALL_A.data], [CALL_B.to, false, CALL_B.data]],
@@ -74,16 +61,16 @@ describe("MulticallContext", () => {
   });
 
   it("blocks value-carrying calls", async () => {
-    const { walletClient } = stubClients();
-    const context = createMulticallContext({ walletClient, account: ACCOUNT, chain: CHAIN });
+    const { signer } = stubClients();
+    const context = createMulticallContext({ signer, chainId: CHAIN.id });
     const report = await context.supports([{ ...CALL_A, value: 1n }]);
     assert.equal(report.supported, false);
     assert.match(report.blockers[0].reason, /native value/);
   });
 
   it("quotes a single batched transaction", async () => {
-    const { walletClient, publicClient } = stubClients();
-    const context = createMulticallContext({ walletClient, publicClient, account: ACCOUNT, chain: CHAIN });
+    const { signer, provider } = stubClients();
+    const context = createMulticallContext({ signer, provider, chainId: CHAIN.id });
     const quote = await context.quote([CALL_A, CALL_B]);
     assert.equal(quote.gas, 120_000n);
     assert.equal(quote.nativeCost, 120_000n * 1_000_000_000n);
@@ -94,9 +81,8 @@ describe("MulticallContext", () => {
     resetContexts();
     registerContext(multicallContextFactory);
     const context = await resolveContext("multicall", 10, {
-      walletClient: stubClients().walletClient,
-      account: ACCOUNT,
-      chain: { id: 10, name: "Optimism" },
+      signer: stubClients().signer,
+      chainId: 10,
     });
     assert.equal(context.kind, "multicall");
     assert.equal(context.chainId, 10);

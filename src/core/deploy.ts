@@ -10,18 +10,21 @@
  *   ]);
  *   // execute `calls` in any context (direct, multicall, RAILGUN Relay Adapt)
  */
-import { concat, getAddress, keccak256, padHex, type Address, type Hex } from "viem";
-import type { ContractCall } from "./types.js";
+import { concat as concatHex, getCreate2Address, keccak256, zeroPadValue, type BytesLike } from "ethers";
+import type { Address, ContractCall, Hex } from "./types.js";
 
 /** The canonical CREATE2 deployer proxy (same address on every EVM chain). Its
  *  `deploy(bytes)` treats the first 32 bytes of the input as the salt. */
 export const CANONICAL_CREATE2_FACTORY: Address = "0x4e59b44847b379578588920cA78FbF26c0B4956C";
 
-/** CREATE2 address math: keccak256(0xff ‖ deployer(20B, unpadded) ‖ salt(32B) ‖ keccak256(initCode))[12:]. */
+/** CREATE2 address math: keccak256(0xff ‖ deployer(20B, unpadded) ‖ salt(32B) ‖ keccak256(initCode))[12:].
+ *  (ethers' getCreate2Address implements exactly this; golden-vector tested.) */
 export function precomputeCreate2Address(deployer: Address, salt: Hex, initCode: Hex): Address {
-  const initCodeHash = keccak256(initCode);
-  const packed = concat(["0xff", deployer, padHex(salt, { size: 32 }), initCodeHash]);
-  return getAddress(`0x${keccak256(packed).slice(26)}`);
+  return getCreate2Address(deployer, salt, keccak256(initCode)) as Address;
+}
+
+function concat(parts: Hex[]): Hex {
+  return concatHex(parts as BytesLike[]) as Hex;
 }
 
 export interface CounterfactualDeploySpec {
@@ -40,7 +43,7 @@ export interface CounterfactualDeploySpec {
  * contexts refuse undeclared ERC-20 flows but a bare contract call has none).
  */
 export function deployCall(spec: CounterfactualDeploySpec): ContractCall {
-  const encode = spec.encodeDeploy ?? ((salt: Hex, initCode: Hex) => concat([padHex(salt, { size: 32 }), initCode]));
+  const encode = spec.encodeDeploy ?? ((salt: Hex, initCode: Hex) => concat([zeroPadValue(salt, 32) as Hex, initCode]));
   return { to: spec.factory, data: encode(spec.salt, spec.initCode) };
 }
 

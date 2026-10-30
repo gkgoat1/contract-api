@@ -1,31 +1,36 @@
 import type {
   Address,
-  Chain,
-  Hex,
-  PublicClient,
-  TransactionReceipt,
-  WalletClient,
-} from "viem";
-import type {
-  ContextFactory,
   ContractCall,
+  ContextFactory,
   ExecuteOpts,
   ExecutionEvent,
   ExecutionQuote,
   ExecutionResult,
+  Hex,
   InteractionContext,
+  ReadProvider,
+  Receipt,
   SupportReport,
+  WriteSigner,
 } from "./types.js";
 
 export interface DirectContextDeps {
-  walletClient: WalletClient;
-  publicClient?: PublicClient;
-  account: Address;
-  chain: Chain;
+  /** The connected signer (an ethers `Signer` satisfies this). */
+  signer: WriteSigner;
+  provider?: ReadProvider;
+  chainId: number;
 }
 
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function normalizeReceipt(r: { status: number | null; transactionHash: string; blockNumber: number }): Receipt {
+  return {
+    transactionHash: r.transactionHash as Hex,
+    status: r.status === 1 ? "success" : "reverted",
+    blockNumber: BigInt(r.blockNumber),
+  };
 }
 
 /**
@@ -36,17 +41,13 @@ export class DirectContext implements InteractionContext {
   readonly kind = "direct";
   readonly chainId: number;
 
-  private readonly walletClient: WalletClient;
-  private readonly publicClient?: PublicClient;
-  private readonly account: Address;
-  private readonly chain: Chain;
+  private readonly signer: WriteSigner;
+  private readonly provider?: ReadProvider;
 
   constructor(deps: DirectContextDeps) {
-    this.walletClient = deps.walletClient;
-    this.publicClient = deps.publicClient;
-    this.account = deps.account;
-    this.chain = deps.chain;
-    this.chainId = deps.chain.id;
+    this.signer = deps.signer;
+    this.provider = deps.provider;
+    this.chainId = deps.chainId;
   }
 
   async supports(_calls: ContractCall[]): Promise<SupportReport> {
@@ -56,17 +57,19 @@ export class DirectContext implements InteractionContext {
 
   async quote(calls: ContractCall[]): Promise<ExecutionQuote> {
     let gas = 0n;
-    if (this.publicClient) {
+    const from = (await this.signer.getAddress()) as Address;
+    if (this.provider) {
       for (const call of calls) {
-        gas += await this.publicClient.estimateGas({
-          account: this.account,
+        gas += await this.provider.estimateGas({
+          from,
           to: call.to,
           data: call.data,
           value: call.value,
         });
       }
     }
-    const gasPrice = this.publicClient ? await this.publicClient.getGasPrice() : 0n;
+    const fee = this.provider ? await this.provider.getFeeData() : null;
+    const gasPrice = fee?.gasPrice ?? 0n;
     return {
       gas,
       nativeCost: gas * gasPrice,
@@ -81,20 +84,21 @@ export class DirectContext implements InteractionContext {
   ): AsyncGenerator<ExecutionEvent, ExecutionResult> {
     yield { phase: "prepared" };
     const txHashes: Hex[] = [];
-    const receipts: TransactionReceipt[] = [];
+    const receipts: Receipt[] = [];
     try {
       for (const call of calls) {
-        const txHash = await this.walletClient.sendTransaction({
-          account: this.account,
-          chain: this.chain,
+        const sent = await this.signer.sendTransaction({
           to: call.to,
           data: call.data,
           value: call.value,
         });
+        const txHash = sent.hash as Hex;
         txHashes.push(txHash);
         yield { phase: "submitted", txHash };
-        if (this.publicClient) {
-          const receipt = await this.publicClient.waitForTransactionReceipt({ hash: txHash });
+        if (this.provider) {
+          const raw = await this.provider.waitForTransaction(txHash);
+          if (!raw) throw new Error(`Transaction ${txHash} not found.`);
+          const receipt = normalizeReceipt(raw);
           if (receipt.status === "reverted") {
             throw new Error(`Transaction ${txHash} was reverted.`);
           }

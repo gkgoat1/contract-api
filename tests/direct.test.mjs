@@ -6,30 +6,32 @@ const ACCOUNT = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
 const CHAIN = { id: 31337, name: "Anvil" };
 const CALL = { to: "0x0000000000000000000000000000000000000001", data: "0x1234", value: 5n };
 
-/** Minimal stub clients: just the methods DirectContext touches. */
+/** Minimal stubs: the narrow WriteSigner/ReadProvider shapes (ethers-era). */
 function stubClients({ revert = false } = {}) {
   const sent = [];
-  const walletClient = {
+  const signer = {
+    getAddress: async () => ACCOUNT,
     sendTransaction: async (args) => {
       sent.push(args);
-      return "0xhash" + sent.length;
+      return { hash: "0xhash" + sent.length };
     },
   };
-  const publicClient = {
+  const provider = {
     estimateGas: async () => 21_000n,
-    getGasPrice: async () => 2_000_000_000n, // 2 gwei
-    waitForTransactionReceipt: async ({ hash }) => ({
+    getFeeData: async () => ({ gasPrice: 2_000_000_000n }), // 2 gwei
+    waitForTransaction: async (hash) => ({
       transactionHash: hash,
-      status: revert ? "reverted" : "success",
+      status: revert ? 0 : 1,
+      blockNumber: 1,
     }),
   };
-  return { walletClient, publicClient, sent };
+  return { signer, provider, sent };
 }
 
 describe("DirectContext", () => {
   it("sends each call and streams prepared/submitted/confirmed", async () => {
-    const { walletClient, publicClient, sent } = stubClients();
-    const context = createDirectContext({ walletClient, publicClient, account: ACCOUNT, chain: CHAIN });
+    const { signer, provider, sent } = stubClients();
+    const context = createDirectContext({ signer, provider, chainId: CHAIN.id });
     assert.equal(context.kind, "direct");
     assert.equal(context.chainId, 31337);
 
@@ -47,20 +49,20 @@ describe("DirectContext", () => {
     assert.deepEqual(step.value.txHashes, ["0xhash1"]);
     assert.equal(step.value.receipts.length, 1);
     assert.deepEqual(sent, [
-      { account: ACCOUNT, chain: CHAIN, to: CALL.to, data: CALL.data, value: CALL.value },
+      { to: CALL.to, data: CALL.data, value: CALL.value },
     ]);
   });
 
   it("reports full support with no blockers", async () => {
-    const { walletClient } = stubClients();
-    const context = createDirectContext({ walletClient, account: ACCOUNT, chain: CHAIN });
+    const { signer } = stubClients();
+    const context = createDirectContext({ signer, chainId: CHAIN.id });
     const report = await context.supports([CALL]);
     assert.deepEqual(report, { supported: true, blockers: [] });
   });
 
   it("quotes summed gas and native cost", async () => {
-    const { walletClient, publicClient } = stubClients();
-    const context = createDirectContext({ walletClient, publicClient, account: ACCOUNT, chain: CHAIN });
+    const { signer, provider } = stubClients();
+    const context = createDirectContext({ signer, provider, chainId: CHAIN.id });
     const quote = await context.quote([CALL, CALL]);
     assert.equal(quote.gas, 42_000n);
     assert.equal(quote.nativeCost, 42_000n * 2_000_000_000n);
@@ -69,8 +71,8 @@ describe("DirectContext", () => {
   });
 
   it("yields failed and rethrows when a receipt reverts", async () => {
-    const { walletClient, publicClient } = stubClients({ revert: true });
-    const context = createDirectContext({ walletClient, publicClient, account: ACCOUNT, chain: CHAIN });
+    const { signer, provider } = stubClients({ revert: true });
+    const context = createDirectContext({ signer, provider, chainId: CHAIN.id });
     const events = [];
     await assert.rejects(async () => {
       for await (const event of context.execute([CALL])) {

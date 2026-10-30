@@ -1,4 +1,4 @@
-import type { Hex, TransactionReceipt } from "viem";
+import type { Hex, Receipt } from "../core/types.js";
 import type {
   ContextFactory,
   ContractCall,
@@ -52,7 +52,7 @@ export class MockContext implements InteractionContext {
     ];
     this.result = options.result ?? {
       txHashes: ["0xdeadbeef" as Hex],
-      receipts: [] as TransactionReceipt[],
+      receipts: [] as Receipt[],
     };
   }
 

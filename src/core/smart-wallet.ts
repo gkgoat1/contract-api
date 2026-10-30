@@ -16,13 +16,8 @@
  * EOA, …): the context shapes the wallet call, gets the digest signed, and
  * preflights the signature against the wallet before submitting.
  */
-import {
-  encodeAbiParameters,
-  encodeFunctionData,
-  type Address,
-  type Hex,
-  type PublicClient,
-} from "viem";
+import { AbiCoder, Interface } from "ethers";
+import type { Address, Hex, ReadProvider } from "./types.js";
 import type {
   ContractCall,
   ExecuteOpts,
@@ -51,7 +46,7 @@ export interface SmartWalletDeps {
   /** Arbitrary signer whose signatures the wallet accepts. */
   signer: ArbitrarySigner;
   executor: WalletExecutor;
-  publicClient: PublicClient;
+  publicClient: ReadProvider;
   chainId: number;
 }
 
@@ -59,60 +54,27 @@ export interface SmartWalletDeps {
 export const ERC7821_BATCH_MODE: Hex =
   "0x0100000000000000000000000000000000000000000000000000000000000000";
 
-const ERC7821_EXECUTE_ABI = [
-  {
-    type: "function",
-    name: "execute",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "mode", type: "bytes32" },
-      { name: "executionData", type: "bytes" },
-    ],
-    outputs: [],
-  },
-] as const;
-
-const EXECUTION_TUPLE = [
-  {
-    type: "tuple[]",
-    name: "executions",
-    components: [
-      { name: "target", type: "address" },
-      { name: "value", type: "uint256" },
-      { name: "callData", type: "bytes" },
-    ],
-  },
-] as const;
-
-const WALLET_DELEGATE_ABI = [
-  {
-    type: "function",
-    name: "delegate",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "target", type: "address" },
-      { name: "data", type: "bytes" },
-    ],
-    outputs: [{ name: "result", type: "bytes" }],
-  },
-] as const;
+const ERC7821_EXECUTE = new Interface([
+  "function execute(bytes32 mode, bytes executionData)",
+]);
+const WALLET_DELEGATE = new Interface([
+  "function delegate(address target, bytes data) returns (bytes result)",
+]);
+const EXECUTION_TUPLE = "tuple(address target, uint256 value, bytes callData)[]";
 
 /** ERC-7821 batch executionData = abi.encode(Execution[]). */
 export function encodeBatch7821(calls: ContractCall[]): Hex {
-  return encodeAbiParameters(EXECUTION_TUPLE, [
-    calls.map((c) => ({ target: c.to, value: c.value ?? 0n, callData: c.data })),
-  ]);
+  return AbiCoder.defaultAbiCoder().encode(
+    [EXECUTION_TUPLE],
+    [calls.map((c) => ({ target: c.to, value: c.value ?? 0n, callData: c.data }))],
+  ) as Hex;
 }
 
 /** The wallet call executing the batch via the wallet's own ERC-7821 loop. */
 export function walletExecuteBatch(wallet: Address, calls: ContractCall[]): { to: Address; data: Hex } {
   return {
     to: wallet,
-    data: encodeFunctionData({
-      abi: ERC7821_EXECUTE_ABI,
-      functionName: "execute",
-      args: [ERC7821_BATCH_MODE, encodeBatch7821(calls)],
-    }),
+    data: ERC7821_EXECUTE.encodeFunctionData("execute", [ERC7821_BATCH_MODE, encodeBatch7821(calls)]) as Hex,
   };
 }
 
@@ -122,7 +84,7 @@ export function walletDelegateMulticall3(wallet: Address, calls: ContractCall[])
   const agg = multicall3.aggregate3(calls.map((c) => ({ target: c.to, allowFailure: false, callData: c.data })));
   return {
     to: wallet,
-    data: encodeFunctionData({ abi: WALLET_DELEGATE_ABI, functionName: "delegate", args: [agg.to, agg.data] }),
+    data: WALLET_DELEGATE.encodeFunctionData("delegate", [agg.to, agg.data]) as Hex,
   };
 }
 
@@ -155,7 +117,7 @@ abstract class SmartWalletBase implements InteractionContext {
       const dummySig = await this.deps.signer.sign(digest); // real sig for a faithful estimate
       gas += await this.deps.executor.estimate(wc, dummySig);
     }
-    const gasPrice = await this.deps.publicClient.getGasPrice();
+    const gasPrice = (await this.deps.publicClient.getFeeData()).gasPrice ?? 0n;
     return {
       gas,
       nativeCost: gas * gasPrice,
@@ -176,10 +138,14 @@ abstract class SmartWalletBase implements InteractionContext {
       const signature = await signAndVerify(this.deps.signer, digest, this.deps.publicClient);
       const txHash = await this.deps.executor.submit(wc, signature);
       yield { phase: "submitted", txHash };
-      const receipt = await this.deps.publicClient.waitForTransactionReceipt({ hash: txHash });
-      if (receipt.status === "reverted") throw new Error(`Transaction ${txHash} was reverted.`);
+      const raw = await this.deps.publicClient.waitForTransaction(txHash);
+      if (!raw || raw.status !== 1) throw new Error(`Transaction ${txHash} was reverted.`);
       txHashes.push(txHash);
-      receipts.push(receipt);
+      receipts.push({
+        transactionHash: raw.transactionHash as Hex,
+        status: "success",
+        blockNumber: BigInt(raw.blockNumber),
+      });
       yield { phase: "confirmed", txHash };
     }
     return { txHashes, receipts };

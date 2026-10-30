@@ -80,11 +80,31 @@ export async function* runPrivateDeploy(
   }
 
   // Stage 2: deploy from the ephemeral EOA via the direct context.
+  // E-3 bridge: adapt the viem clients onto the ethers-era narrow interfaces
+  // (this whole file converts to ethers in E-3).
+  const wc = deps.ephemeralWalletClient;
   const direct = new DirectContext({
-    walletClient: deps.ephemeralWalletClient,
-    publicClient: deps.publicClient,
-    account: deps.ephemeralAccount,
-    chain: deps.chain,
+    signer: {
+      getAddress: async () => deps.ephemeralAccount as unknown as string,
+      sendTransaction: async (tx) => ({
+        hash: await wc.sendTransaction({ account: deps.ephemeralAccount, chain: deps.chain, ...tx }),
+      }),
+    },
+    provider: {
+      call: async (tx) => (await deps.publicClient.call(tx)) as unknown as string,
+      estimateGas: (tx) =>
+        deps.publicClient.estimateGas({ account: tx.from ?? deps.ephemeralAccount, to: tx.to, data: tx.data, value: tx.value }),
+      getFeeData: async () => ({ gasPrice: await deps.publicClient.getGasPrice() }),
+      waitForTransaction: async (hash) => {
+        const r = await deps.publicClient.waitForTransactionReceipt({ hash: hash as `0x${string}` });
+        return {
+          status: r.status === "success" ? 1 : 0,
+          transactionHash: r.transactionHash,
+          blockNumber: Number(r.blockNumber ?? 0),
+        };
+      },
+    },
+    chainId: deps.chain.id,
   });
   const deployCalls = await deps.buildDeployCalls(deps.ephemeralAccount);
   for await (const event of runStage("deploy", direct.execute(deployCalls))) {

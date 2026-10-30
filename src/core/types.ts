@@ -1,4 +1,35 @@
-import type { Address, Hex, TransactionReceipt } from "viem";
+/** Canonical address/hex shapes (identical in ethers code; template literals). */
+export type Address = `0x${string}`;
+export type Hex = `0x${string}`;
+
+/** Minimal receipt shape shared by all contexts (ethers status 1/0 normalized). */
+export interface Receipt {
+  transactionHash: Hex;
+  status: "success" | "reverted";
+  blockNumber: bigint;
+}
+
+/**
+ * Read-side chain access. Narrow and mock-friendly; an ethers `Provider`
+ * satisfies it directly (`call`, `estimateGas`, `getFeeData`,
+ * `waitForTransaction`).
+ */
+export interface ReadProvider {
+  call(tx: { to: Address; data: Hex; from?: Address; value?: bigint }): Promise<string>;
+  estimateGas(tx: { to: Address; data: Hex; from?: Address; value?: bigint }): Promise<bigint>;
+  getFeeData(): Promise<{ gasPrice: bigint | null }>;
+  waitForTransaction(hash: string): Promise<{
+    status: number | null;
+    transactionHash: string;
+    blockNumber: number;
+  } | null>;
+}
+
+/** Write-side signing. Narrow; an ethers `Signer` satisfies it directly. */
+export interface WriteSigner {
+  getAddress(): Promise<string>;
+  sendTransaction(tx: { to: Address; data: Hex; value?: bigint }): Promise<{ hash: string }>;
+}
 
 /** A single encoded contract call. */
 export interface ContractCall {
@@ -42,7 +73,7 @@ export type ExecutionEvent =
 
 export interface ExecutionResult {
   txHashes: Hex[];
-  receipts: TransactionReceipt[];
+  receipts: Receipt[];
 }
 
 export interface ExecuteOpts {

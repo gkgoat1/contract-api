@@ -1,21 +1,17 @@
-import {
-  encodeFunctionData,
-  type Address,
-  type Chain,
-  type Hex,
-  type PublicClient,
-  type TransactionReceipt,
-  type WalletClient,
-} from "viem";
 import type {
+  Address,
   ContextFactory,
   ContractCall,
   ExecuteOpts,
   ExecutionEvent,
   ExecutionQuote,
   ExecutionResult,
+  Hex,
   InteractionContext,
+  ReadProvider,
+  Receipt,
   SupportReport,
+  WriteSigner,
 } from "./types.js";
 
 /** Canonical Multicall3 deployment (same address on every EVM chain). The typed
@@ -25,10 +21,10 @@ import { multicall3, ADDRESS as MULTICALL3_DISPATCH_ADDRESS } from "./dispatch/m
 export const MULTICALL3_ADDRESS: Address = MULTICALL3_DISPATCH_ADDRESS;
 
 export interface MulticallContextDeps {
-  walletClient: WalletClient;
-  publicClient?: PublicClient;
-  account: Address;
-  chain: Chain;
+  /** The connected signer (an ethers `Signer` satisfies this). */
+  signer: WriteSigner;
+  provider?: ReadProvider;
+  chainId: number;
   /** Override for chains with a non-canonical Multicall3. */
   multicallAddress?: Address;
 }
@@ -42,12 +38,11 @@ export class MulticallContext implements InteractionContext {
   readonly kind = "multicall";
   readonly chainId: number;
 
-  private readonly deps: Required<Pick<MulticallContextDeps, "walletClient" | "account" | "chain">> &
-    MulticallContextDeps;
+  private readonly deps: MulticallContextDeps;
 
   constructor(deps: MulticallContextDeps) {
     this.deps = deps;
-    this.chainId = deps.chain.id;
+    this.chainId = deps.chainId;
   }
 
   async supports(calls: ContractCall[]): Promise<SupportReport> {
@@ -76,14 +71,15 @@ export class MulticallContext implements InteractionContext {
   async quote(calls: ContractCall[]): Promise<ExecutionQuote> {
     const data = this.encodeBatch(calls);
     let gas = 0n;
-    if (this.deps.publicClient) {
-      gas = await this.deps.publicClient.estimateGas({
-        account: this.deps.account,
+    if (this.deps.provider) {
+      gas = await this.deps.provider.estimateGas({
+        from: (await this.deps.signer.getAddress()) as Address,
         to: this.multicallAddress(),
         data,
       });
     }
-    const gasPrice = this.deps.publicClient ? await this.deps.publicClient.getGasPrice() : 0n;
+    const fee = this.deps.provider ? await this.deps.provider.getFeeData() : null;
+    const gasPrice = fee?.gasPrice ?? 0n;
     return {
       gas,
       nativeCost: gas * gasPrice,
@@ -107,18 +103,23 @@ export class MulticallContext implements InteractionContext {
     }
     yield { phase: "prepared" };
     const txHashes: Hex[] = [];
-    const receipts: TransactionReceipt[] = [];
+    const receipts: Receipt[] = [];
     try {
-      const txHash = await this.deps.walletClient.sendTransaction({
-        account: this.deps.account,
-        chain: this.deps.chain,
+      const sent = await this.deps.signer.sendTransaction({
         to: this.multicallAddress(),
         data: this.encodeBatch(calls),
       });
+      const txHash = sent.hash as Hex;
       txHashes.push(txHash);
       yield { phase: "submitted", txHash };
-      if (this.deps.publicClient) {
-        const receipt = await this.deps.publicClient.waitForTransactionReceipt({ hash: txHash });
+      if (this.deps.provider) {
+        const raw = await this.deps.provider.waitForTransaction(txHash);
+        if (!raw) throw new Error(`Transaction ${txHash} not found.`);
+        const receipt: Receipt = {
+          transactionHash: raw.transactionHash as Hex,
+          status: raw.status === 1 ? "success" : "reverted",
+          blockNumber: BigInt(raw.blockNumber),
+        };
         if (receipt.status === "reverted") {
           throw new Error(`Transaction ${txHash} was reverted.`);
         }
