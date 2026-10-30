@@ -30,7 +30,7 @@ function mockFunding({ nativeGas = 200_000n } = {}) {
         }),
       },
       publicClient: {
-        waitForTransactionReceipt: async ({ hash }) => ({ transactionHash: hash, status: "success" }),
+        waitForTransaction: async (hash) => ({ hash, status: 1, blockNumber: 1 }),
       },
       unshieldFeeBps: 25n,
       selfSubmit: async (tx) => {
@@ -46,16 +46,17 @@ function mockEphemeral(balanceAfterDeploy = 5_000_000_000_000_000n) {
   return {
     sent,
     walletClient: {
+      getAddress: async () => "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
       sendTransaction: async (args) => {
         sent.push(args);
-        return `0xdeploy${sent.length}`;
+        return { hash: `0xdeploy${sent.length}` };
       },
     },
     publicClient: {
       estimateGas: async () => 100_000n,
-      getGasPrice: async () => 1_000_000_000n,
+      getFeeData: async () => ({ gasPrice: 1_000_000_000n, maxFeePerGas: 2_000_000_000n, maxPriorityFeePerGas: 1_000_000_000n }),
       getBalance: async () => balanceAfterDeploy,
-      waitForTransactionReceipt: async ({ hash }) => ({ transactionHash: hash, status: "success" }),
+      waitForTransaction: async (hash) => ({ hash, status: 1, blockNumber: 1 }),
     },
   };
 }
@@ -176,7 +177,7 @@ describe("broadcaster-submitted funding (T-1.5)", () => {
         }),
       },
       publicClient: {
-        waitForTransactionReceipt: async ({ hash }) => ({ transactionHash: hash, status: "success" }),
+        waitForTransaction: async (hash) => ({ hash, status: 1, blockNumber: 1 }),
       },
       unshieldFeeBps: 25n,
       broadcaster: broadcasterSelection,
@@ -220,7 +221,7 @@ describe("broadcaster-submitted funding (T-1.5)", () => {
         },
         populateNativeShield: async (amount, from) => ({ to: "0x8888888888888888888888888888888888888888", data: "0xshield", value: amount }),
       },
-      publicClient: { waitForTransactionReceipt: async ({ hash }) => ({ transactionHash: hash, status: "success" }) },
+      publicClient: { waitForTransaction: async (hash) => ({ hash, status: 1, blockNumber: 1 }) },
       unshieldFeeBps: 25n,
       broadcaster: {
         client: { submit: async () => "0xbroadcasttx" },

@@ -5,8 +5,8 @@
  * implementation.
  *
  * The host seam is deliberately tiny — the connected wallet is represented by
- * a raw EIP-1193 provider (viem wraps it for signing/calls), and the ephemeral
- * deployer is injected by the app (ethers, viem, whatever it already uses):
+ * a raw EIP-1193 provider (ethers wraps it for signing/calls), and the ephemeral
+ * deployer is injected by the app (any ethers-compatible identity):
  *
  *   const funding = await bootstrapRailgunFunding({ chainId, rpcUrl, provider, account, feeTokenAddress });
  *   await deployPrivately(
@@ -18,10 +18,8 @@
  * localforage) load lazily and only when privacy mode actually runs.
  */
 import { BrowserProvider, JsonRpcProvider, keccak256 } from "ethers";
-// E-3 ISLAND (deleted when the railgun internals take ReadProvider): the sdk and
-// context deps still speak viem PublicClient until the worker's E-3 lands.
-import { createPublicClient, http, type PublicClient as ViemPublicClient } from "viem";
 import type { Address, Hex, ReadProvider, WriteSigner } from "./core/types.js";
+import type { RailgunReadProvider } from "./railgun/types.js";
 
 /** Raw EIP-1193 request shape (what window.ethereum exposes). */
 export interface EIP1193Provider {
@@ -45,9 +43,14 @@ export function isPrivacySupported(chainId: number | undefined): boolean {
   return chainId !== undefined && networkNameForChain(chainId) !== undefined;
 }
 
-/** E-3 island: the viem read client the railgun internals still expect. */
-export function viemPublicClientFor(host: { rpcUrl: string }): ViemPublicClient {
-  return createPublicClient({ transport: http(host.rpcUrl) });
+/**
+ * The railgun read provider over the host's RPC. An ethers `JsonRpcProvider`
+ * satisfies `RailgunReadProvider` structurally (getFeeData returns the EIP-1559
+ * FeeData fields, waitForTransaction returns hash/status/blockNumber,
+ * getBalance) — no wrapper needed.
+ */
+export function railgunReadProviderFor(host: { rpcUrl: string; chainId: number }): RailgunReadProvider {
+  return new JsonRpcProvider(host.rpcUrl, host.chainId) as unknown as RailgunReadProvider;
 }
 
 /** ethers read provider for the host's own calls. */
@@ -117,11 +120,14 @@ export async function calculateBroadcasterFee(opts: {
   feeTokenAddress: Address;
   feePerUnitGas: bigint;
   gasEstimate: bigint;
-  /** E-3 island: viem client until the railgun internals take ReadProvider. */
-  publicClient: ViemPublicClient;
+  /** The railgun read provider (an ethers Provider satisfies it directly). */
+  publicClient: RailgunReadProvider;
 }): Promise<bigint> {
   const { calculateBroadcasterFeeERC20Amount } = await import("@railgun-community/wallet");
-  const fees = await opts.publicClient.estimateFeesPerGas();
+  const fees = await opts.publicClient.getFeeData();
+  if (fees.maxFeePerGas == null || fees.maxPriorityFeePerGas == null) {
+    throw new Error("RAILGUN needs an EIP-1559 chain: no maxFeePerGas/maxPriorityFeePerGas.");
+  }
   const fee = calculateBroadcasterFeeERC20Amount(
     { tokenAddress: opts.feeTokenAddress, feePerUnitGas: opts.feePerUnitGas },
     {
@@ -149,7 +155,7 @@ export async function bootstrapRailgunFunding(host: RailgunHost): Promise<Fundin
     return session.contextWith();
   }
   const status = host.onStatus ?? ((): void => undefined);
-  const publicClient = viemPublicClientFor(host);
+  const publicClient = railgunReadProviderFor(host);
   const { selectBroadcasterForContext } = await import("./railgun/index.js");
   try {
     // A shape-only estimate: the unshield's gas is roughly constant for a given
@@ -170,7 +176,7 @@ export async function bootstrapRailgunFunding(host: RailgunHost): Promise<Fundin
       chainId: host.chainId,
       feeTokenAddress: host.feeTokenAddress,
       feeAmount,
-      overallBatchMinGasPrice: (await publicClient.estimateFeesPerGas()).maxFeePerGas ?? 0n,
+      overallBatchMinGasPrice: (await publicClient.getFeeData()).maxFeePerGas ?? 0n,
       onStatus: (s) => status(`broadcaster: ${s}`),
     });
     status("broadcaster selected — funding will be submitted anonymously over Waku");
@@ -205,7 +211,7 @@ async function bootstrapRailgunSessionInner(host: RailgunHost): Promise<RailgunS
   const { default: localforage } = await import("localforage");
 
   const signer = await ethersHostSigner(host);
-  const publicClient = viemPublicClientFor(host);
+  const publicClient = railgunReadProviderFor(host);
 
   if (!engineStarted) {
     status("Starting the RAILGUN engine (first run downloads proving artifacts)…");
@@ -286,7 +292,7 @@ async function bootstrapRailgunSessionInner(host: RailgunHost): Promise<RailgunS
 export interface PrivateDeploymentOpts {
   /** Native gas to unshield into the ephemeral deployer. */
   fundAmount: bigint;
-  /** The ephemeral deployer identity (app-provided: ethers/viem/…). */
+  /** The ephemeral deployer identity (app-provided; ethers-compatible). */
   ephemeral: EphemeralDeployer;
   /**
    * Runs the app's deployment flow with the ephemeral deployer installed as
@@ -297,8 +303,8 @@ export interface PrivateDeploymentOpts {
 
 export interface PrivateDeploymentCtx {
   funding: FundingSource;
-  /** E-3 island: viem client until the railgun internals take ReadProvider. */
-  publicClient: ViemPublicClient;
+  /** The railgun read provider (an ethers Provider satisfies it directly). */
+  publicClient: RailgunReadProvider;
 }
 
 /**
@@ -323,7 +329,7 @@ export async function deployPrivately(
     // Sweep leftover gas back into the shielded balance (keep a reserve for
     // the sweep transaction's own gas).
     const reserve = 1_000_000_000_000_000n; // 0.001 native
-    const balance = await ctx.publicClient.getBalance({ address: opts.ephemeral.address }).catch(() => 0n);
+    const balance = await ctx.publicClient.getBalance(opts.ephemeral.address).catch(() => 0n);
     const amount = balance - reserve;
     if (amount > 0n) {
       try {

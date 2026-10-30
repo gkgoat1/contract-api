@@ -7,7 +7,7 @@
  */
 import { JsonRpcProvider, NonceManager, Wallet, parseEther, type Signer } from "ethers";
 import type { Address } from "./core/types.js";
-import { viemPublicClientFor, type EIP1193Provider } from "./host-railgun.ts";
+import { railgunReadProviderFor, type EIP1193Provider } from "./host-railgun.ts";
 import {
   deployPrivately,
   isPrivacySupported,
@@ -100,7 +100,7 @@ export async function deployViaRailgun(args: RailgunDeployArgs): Promise<void> {
     onStatus: args.onStatus,
   };
   const funding = await resolveRailgunFunding(host);
-  const publicClient = viemPublicClientFor(args); // E-3 island (sweep reads balances)
+  const publicClient = railgunReadProviderFor(host);
   const ephemeral = createEphemeralDeployer(args.rpcUrl);
   args.onStatus(`Funding ephemeral deployer ${ephemeral.address} from the shielded balance…`);
   await deployPrivately(

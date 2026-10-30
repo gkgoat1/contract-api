@@ -1,4 +1,4 @@
-import type { Address, Hex, TransactionReceipt } from "viem";
+import type { Address, Hex, Receipt } from "../core/types.js";
 import type { RailgunERC20Amount } from "@railgun-community/shared-models";
 import type {
   ContextFactory,
@@ -141,12 +141,12 @@ export class RailgunContext implements InteractionContext {
       const populated = await this.deps.sdk.populateNativeUnshield(input);
       const txHash = await this.submit(populated, input.sendWithPublicWallet);
       yield { phase: "submitted", txHash };
-      const receipt = await this.deps.publicClient.waitForTransactionReceipt({ hash: txHash });
+      const receipt = await this.waitForReceipt(txHash);
       if (receipt.status === "reverted") {
         throw new Error(`Transaction ${txHash} was reverted.`);
       }
       yield { phase: "confirmed", txHash };
-      return { txHashes: [txHash], receipts: [receipt as TransactionReceipt] };
+      return { txHashes: [txHash], receipts: [receipt] };
     } catch (error) {
       const err = toError(error);
       yield { phase: "failed", error: err };
@@ -161,6 +161,17 @@ export class RailgunContext implements InteractionContext {
    */
   buildNativeShield(amount: bigint, fromWalletAddress: Address): Promise<PopulatedRailgunTransaction> {
     return this.deps.sdk.populateNativeShield(amount, fromWalletAddress);
+  }
+
+  /** Wait for + normalize a receipt from the narrow read provider (ethers shape). */
+  private async waitForReceipt(txHash: Hex): Promise<Receipt> {
+    const raw = await this.deps.publicClient.waitForTransaction(txHash);
+    if (!raw) throw new Error(`Transaction ${txHash} not found.`);
+    return {
+      transactionHash: raw.hash as Hex,
+      status: raw.status === 1 ? "success" : "reverted",
+      blockNumber: BigInt(raw.blockNumber),
+    };
   }
 
   private async submit(
@@ -240,12 +251,12 @@ export class RailgunContext implements InteractionContext {
       }
       const txHash = await this.submit(populated, input.sendWithPublicWallet);
       yield { phase: "submitted", txHash };
-      const receipt = await this.deps.publicClient.waitForTransactionReceipt({ hash: txHash });
+      const receipt = await this.waitForReceipt(txHash);
       if (receipt.status === "reverted") {
         throw new Error(`Transaction ${txHash} was reverted.`);
       }
       yield { phase: "confirmed", txHash };
-      return { txHashes: [txHash], receipts: [receipt as TransactionReceipt] };
+      return { txHashes: [txHash], receipts: [receipt] };
     } catch (error) {
       const err = toError(error);
       yield { phase: "failed", error: err };

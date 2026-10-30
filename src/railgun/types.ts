@@ -1,10 +1,32 @@
-import type { Address, Hex, PublicClient } from "viem";
+import type { Address, Hex } from "../core/types.js";
 import type {
   RailgunERC20Amount,
   RailgunERC20AmountRecipient,
   RailgunERC20Recipient,
 } from "@railgun-community/shared-models";
 import type { ContractCall } from "../core/types.js";
+
+/**
+ * The read-side chain access the RAILGUN internals need (E-3). Narrow and
+ * mock-friendly; an ethers `Provider` satisfies it directly (`getFeeData`,
+ * `waitForTransaction`, `getBalance`). RAILGUN is EIP-1559 only, so getFeeData
+ * must surface the Type-2 fields (ethers' `FeeData` already does).
+ */
+export interface RailgunReadProvider {
+  getFeeData(): Promise<{
+    gasPrice: bigint | null;
+    maxFeePerGas: bigint | null;
+    maxPriorityFeePerGas: bigint | null;
+  }>;
+  /** Ethers-style receipt: `hash`, numeric `status` (1 success / 0 reverted),
+   *  `blockNumber`. */
+  waitForTransaction(hash: string): Promise<{
+    status: number | null;
+    hash: string;
+    blockNumber: number;
+  } | null>;
+  getBalance(address: string): Promise<bigint>;
+}
 
 /** Everything the RAILGUN context needs to know to build one execution. */
 export interface RailgunExecutionInput {
@@ -82,7 +104,7 @@ export interface RailgunContextDeps {
   /** The user's RAILGUN wallet address (0zk…); outputs re-shield to it. */
   railgunAddress: string;
   sdk: RailgunSdk;
-  publicClient: PublicClient;
+  publicClient: RailgunReadProvider;
   /** Unshield fee in basis points (RAILGUN charges 25 = 0.25%). */
   unshieldFeeBps: bigint;
   /** Broadcaster submission; falls back to selfSubmit when absent. */

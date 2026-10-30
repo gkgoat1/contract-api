@@ -1,4 +1,4 @@
-import type { Address, Chain, PublicClient, WalletClient } from "viem";
+import type { Address, ReadProvider, WriteSigner } from "../core/types.js";
 import { DirectContext } from "../core/direct.js";
 import type {
   ContractCall,
@@ -26,11 +26,13 @@ export interface FundingSource {
 export interface PrivateDeployDeps {
   /** Funding source: unshields native gas to the ephemeral deployer. */
   funding: FundingSource;
-  publicClient: PublicClient;
-  /** A freshly generated, never-before-used account. */
-  ephemeralWalletClient: WalletClient;
+  /** Narrow read provider (an ethers Provider satisfies it directly). */
+  publicClient: ReadProvider & { getBalance(address: string): Promise<bigint> };
+  /** A freshly generated, never-before-used account's write signer. */
+  ephemeralWalletClient: WriteSigner;
   ephemeralAccount: Address;
-  chain: Chain;
+  /** The chain id. */
+  chain: { id: number };
   /** Native amount to unshield into the ephemeral deployer. */
   fundAmount: bigint;
   /** The deployment calls, built once the deployer address is known. */
@@ -79,31 +81,11 @@ export async function* runPrivateDeploy(
     yield event;
   }
 
-  // Stage 2: deploy from the ephemeral EOA via the direct context.
-  // E-3 bridge: adapt the viem clients onto the ethers-era narrow interfaces
-  // (this whole file converts to ethers in E-3).
-  const wc = deps.ephemeralWalletClient;
+  // Stage 2: deploy from the ephemeral EOA via the direct context. E-3: the
+  // deps already carry the narrow ethers shapes, so no adaptation is needed.
   const direct = new DirectContext({
-    signer: {
-      getAddress: async () => deps.ephemeralAccount as unknown as string,
-      sendTransaction: async (tx) => ({
-        hash: await wc.sendTransaction({ account: deps.ephemeralAccount, chain: deps.chain, ...tx }),
-      }),
-    },
-    provider: {
-      call: async (tx) => (await deps.publicClient.call(tx)) as unknown as string,
-      estimateGas: (tx) =>
-        deps.publicClient.estimateGas({ account: tx.from ?? deps.ephemeralAccount, to: tx.to, data: tx.data, value: tx.value }),
-      getFeeData: async () => ({ gasPrice: await deps.publicClient.getGasPrice() }),
-      waitForTransaction: async (hash) => {
-        const r = await deps.publicClient.waitForTransactionReceipt({ hash: hash as `0x${string}` });
-        return {
-          status: r.status === "success" ? 1 : 0,
-          transactionHash: r.transactionHash,
-          blockNumber: Number(r.blockNumber ?? 0),
-        };
-      },
-    },
+    signer: deps.ephemeralWalletClient,
+    provider: deps.publicClient,
     chainId: deps.chain.id,
   });
   const deployCalls = await deps.buildDeployCalls(deps.ephemeralAccount);
@@ -114,7 +96,7 @@ export async function* runPrivateDeploy(
   // Stage 3: sweep leftover gas back into the shielded balance.
   const sweep = deps.sweep ?? { reserve: 1_000_000_000_000_000n }; // 0.001
   if (sweep !== false) {
-    const balance = await deps.publicClient.getBalance({ address: deps.ephemeralAccount });
+    const balance = await deps.publicClient.getBalance(deps.ephemeralAccount);
     const amount = balance - sweep.reserve;
     if (amount > 0n) {
       const shieldTx = await deps.funding.buildNativeShield(amount, deps.ephemeralAccount);

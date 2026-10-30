@@ -1,4 +1,4 @@
-import type { Address, Hex, PublicClient } from "viem";
+import type { Address, Hex } from "../core/types.js";
 import {
   NETWORK_CONFIG,
   TXIDVersion,
@@ -16,7 +16,7 @@ function loadWalletSdk(): Promise<WalletSdk> {
   return walletSdkPromise;
 }
 import { networkNameForChain } from "./networks.js";
-import type { PopulatedRailgunTransaction, RailgunSdk } from "./types.js";
+import type { PopulatedRailgunTransaction, RailgunReadProvider, RailgunSdk } from "./types.js";
 
 /**
  * Binds the real @railgun-community/wallet SDK behind the RailgunSdk
@@ -27,7 +27,7 @@ export interface RailgunSdkDeps {
   chainId: number;
   railgunWalletId: string;
   encryptionKey: string;
-  publicClient: PublicClient;
+  publicClient: RailgunReadProvider;
   /** Public wallet used for base-token unshield proofs. */
   publicWalletAddress: string;
   /** Shield private key + RAILGUN address, for base-token shield sweeps. */
@@ -36,10 +36,13 @@ export interface RailgunSdkDeps {
 }
 
 async function gasDetailsFor(
-  publicClient: PublicClient,
+  provider: RailgunReadProvider,
   gasEstimate: bigint,
 ): Promise<TransactionGasDetails> {
-  const fees = await publicClient.estimateFeesPerGas();
+  const fees = await provider.getFeeData();
+  if (fees.maxFeePerGas == null || fees.maxPriorityFeePerGas == null) {
+    throw new Error("RAILGUN needs an EIP-1559 chain: the provider returned no maxFeePerGas/maxPriorityFeePerGas.");
+  }
   return {
     evmGasType: 2, // EVMGasType.Type2 — EIP-1559 chains only for Phase B
     gasEstimate,

@@ -47,7 +47,7 @@ function makeDeps(overrides = {}) {
     railgunAddress: RAILGUN_ADDRESS,
     sdk: mockSdk(),
     publicClient: {
-      waitForTransactionReceipt: async ({ hash }) => ({ transactionHash: hash, status: "success" }),
+      waitForTransaction: async (hash) => ({ hash, status: 1, blockNumber: 1 }),
     },
     unshieldFeeBps: 25n,
     selfSubmit: async () => "0xselfsigned",
